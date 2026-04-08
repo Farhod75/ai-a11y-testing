@@ -1,0 +1,23 @@
+{
+  "name": "ai-a11y-testing",
+  "version": "1.0.0",
+  "description": "AI-Powered Accessibility Testing with Claude + Playwright + axe-core",
+  "scripts": {
+    "test": "playwright test",
+    "test:a11y": "playwright test --grep @a11y",
+    "report": "playwright show-report",
+    "analyze": "npx ts-node scripts/analyze-with-claude.ts"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.59.1",
+    "@axe-core/playwright": "^4.9.1",
+    "axe-core": "^4.9.1",
+    "typescript": "^5.4.0",
+    "ts-node": "^10.9.2",
+    "@types/node": "^20.0.0"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.24.0",
+    "dotenv": "^16.4.5"
+  }
+}
