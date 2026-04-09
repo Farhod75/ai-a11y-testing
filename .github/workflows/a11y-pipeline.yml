@@ -1,0 +1,109 @@
+name: AI Accessibility Testing Pipeline
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+    branches: [main]
+  schedule:
+    - cron: '0 9 * * 1'  # Every Monday 9am
+
+jobs:
+  accessibility-audit:
+    name: 🔍 AI Accessibility Audit
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      # ── STEP 1: Checkout ──────────────────────────────────────────────────
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      # ── STEP 2: Setup Node ────────────────────────────────────────────────
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Install Node dependencies
+        run: npm ci
+
+      - name: Install Playwright browsers
+        run: npx playwright install chromium --with-deps
+
+      # ── STEP 3: Setup Python ──────────────────────────────────────────────
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install Python dependencies
+        run: pip install pytest pytest-html
+
+      # ── STEP 4: Run Playwright + axe-core scan ────────────────────────────
+      - name: Run Playwright Accessibility Scan
+        env:
+          BASE_URL: ${{ vars.TARGET_URL || 'https://dequeuniversity.com/demo/mars/' }}
+        run: npx playwright test --grep "@a11y" --reporter=list
+        continue-on-error: true
+
+      # ── STEP 5-7: Claude AI Analysis ──────────────────────────────────────
+      - name: Run Claude AI Analysis
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: npx ts-node scripts/analyze-with-claude.ts
+        continue-on-error: true
+
+      # ── STEP 8: pytest CI Gate ────────────────────────────────────────────
+      - name: Run pytest Accessibility Assertions
+        run: |
+          pytest tests/ -v \
+            --html=reports/pytest-report.html \
+            --self-contained-html
+        continue-on-error: true
+
+      # ── Upload Reports ─────────────────────────────────────────────────────
+      - name: Upload Accessibility Reports
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: a11y-reports-${{ github.sha }}
+          path: |
+            reports/ai-a11y-report.html
+            reports/ai-analysis.json
+            reports/violations.json
+            reports/pytest-report.html
+          retention-days: 30
+
+      # ── PR Comment ────────────────────────────────────────────────────────
+      - name: Comment PR with Results
+        if: github.event_name == 'pull_request'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const analysisPath = 'reports/ai-analysis.json';
+            if (!fs.existsSync(analysisPath)) return;
+
+            const analysis = JSON.parse(fs.readFileSync(analysisPath, 'utf8'));
+            const critical = analysis.filter(a => a.impact === 'critical').length;
+            const serious = analysis.filter(a => a.impact === 'serious').length;
+
+            const body = `## ♿ AI Accessibility Audit Results
+            | Severity | Count |
+            |----------|-------|
+            | 🔴 Critical | ${critical} |
+            | 🟠 Serious | ${serious} |
+            | Total Analyzed | ${analysis.length} |
+
+            ${critical > 0 
+              ? '❌ **BLOCKING:** Critical violations found. Must fix before merge.' 
+              : '✅ No critical violations detected.'}`;
+
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body
+            });
