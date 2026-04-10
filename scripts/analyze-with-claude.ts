@@ -40,8 +40,15 @@ interface ClaudeAnalysis {
   rootCause: string;
   fixCode: string;
   wcagCriteria: string;
-  priority: number;         // 1 = highest
-  estimatedEffort: string;  // 'low' | 'medium' | 'high'
+  priority: number;
+  estimatedEffort: string;
+  // ── New fields from improved prompt ──
+  affectedUsers?: string;
+  legalRisk?: string;
+  storyPoints?: number;
+  testCode?: string;
+  before?: string;
+  after?: string;
 }
 
 // ─── Constants ────────────────────────────────────────────────────────────────
@@ -62,47 +69,45 @@ function chunkViolations(violations: Violation[]): Map<string, Violation[]> {
   return chunks;
 }
 
-// ─── STEP 6: Prompt Builder — Build context for Claude ───────────────────────
 function buildPrompt(violation: Violation, url: string): string {
-  const nodeExamples = violation.nodes
-    .slice(0, 3)                          // Limit to 3 nodes to stay within tokens
-    .map((n, i) => `
-Node ${i + 1}:
-  HTML: ${n.html.slice(0, 500)}
-  Target: ${n.target.join(', ')}
-  Failure: ${n.failureSummary ?? 'No summary'}
-`).join('\n');
+  return `
+You are an expert WCAG 2.1 accessibility auditor.
 
-  return `You are an expert accessibility engineer and WCAG 2.1 specialist.
-Analyze this axe-core accessibility violation and provide actionable fixes.
-
-=== VIOLATION DETAILS ===
-Rule ID:     ${violation.id}
-Impact:      ${violation.impact ?? 'unknown'}
-Description: ${violation.description}
-Help:        ${violation.help}
-Reference:   ${violation.helpUrl}
-Page URL:    ${url}
-Affected nodes: ${violation.nodes.length}
-
-=== AFFECTED HTML SAMPLES ===
-${nodeExamples}
-
-=== YOUR TASK ===
-Respond ONLY with a valid JSON object (no markdown, no backticks) with this exact structure:
-{
-  "violationId": "${violation.id}",
-  "impact": "${violation.impact}",
-  "summary": "One sentence explaining what this violation means to users",
-  "rootCause": "Technical root cause in 2-3 sentences",
-  "fixCode": "Complete corrected HTML snippet showing the fix",
-  "wcagCriteria": "WCAG criterion number and name (e.g., 1.1.1 Non-text Content)",
-  "priority": 1,
-  "estimatedEffort": "low"
+<example>
+Input: { id: "image-alt", html: "<img src='logo.png'>" }
+Output: {
+  "violationId": "image-alt",
+  "impact": "critical",
+  "affectedUsers": "Blind users using screen readers",
+  "summary": "Image has no alt text — invisible to assistive technology",
+  "rootCause": "The img element lacks an alt attribute. Screen readers will announce the filename instead of a meaningful description.",
+  "before": "<img src='logo.png'>",
+  "after": "<img src='logo.png' alt='Company logo'>",
+  "wcagCriteria": "1.1.1 Non-text Content",
+  "legalRisk": "HIGH",
+  "storyPoints": 1,
+  "estimatedEffort": "low",
+  "testCode": "await expect(page.getByRole('img')).toHaveAttribute('alt')",
+  "priority": 1
 }
+</example>
 
-Priority scale: 1=fix immediately, 2=fix this sprint, 3=fix next sprint, 4=backlog
-Effort: low=<1hr, medium=1-4hr, high=>4hr`;
+<violation>
+  <rule>${violation.id}</rule>
+  <impact>${violation.impact}</impact>
+  <description>${violation.description}</description>
+  <url>${url}</url>
+  <affected_elements>${violation.nodes.length}</affected_elements>
+  <sample_html>${violation.nodes[0]?.html?.slice(0, 400)}</sample_html>
+</violation>
+
+<instructions>
+  Analyze the violation and respond ONLY with JSON — no markdown, no backticks.
+  Be specific to the actual HTML shown.
+  Include a Playwright test assertion in testCode field.
+  legalRisk: CRITICAL=sue immediately, HIGH=sue likely, MEDIUM=risk, LOW=minor
+  storyPoints: 1=trivial, 2=easy, 3=medium, 5=complex
+</instructions>`;
 }
 
 // ─── STEP 7: Claude LLM — Analyze each violation chunk ───────────────────────
@@ -176,25 +181,33 @@ function generateHTMLReport(
   };
 
   const rows = analyses
-    .sort((a, b) => a.priority - b.priority)
-    .map(a => `
-      <tr class="violation-row" data-impact="${a.impact}">
-        <td><span class="badge" style="background:${impactColor[a.impact] ?? '#6b7280'}">${a.impact.toUpperCase()}</span></td>
-        <td><code>${a.violationId}</code></td>
-        <td>${a.summary}</td>
-        <td>${a.wcagCriteria}</td>
-        <td>${a.estimatedEffort}</td>
-        <td>
-          <details>
-            <summary>View Fix ▸</summary>
-            <div class="fix-block">
-              <p><strong>Root Cause:</strong> ${a.rootCause}</p>
-              <pre><code>${escapeHtml(a.fixCode)}</code></pre>
-            </div>
-          </details>
-        </td>
-      </tr>`
-    ).join('\n');
+  .sort((a, b) => a.priority - b.priority)
+  .map(a => `
+    <tr>
+      <td><span class="badge" style="background:${impactColor[a.impact] ?? '#6b7280'}">${a.impact.toUpperCase()}</span></td>
+      <td><code>${a.violationId}</code></td>
+      <td>${a.summary}</td>
+      <td>${a.wcagCriteria}</td>
+      <td><span class="risk risk-${(a.legalRisk ?? 'LOW').toLowerCase()}">${a.legalRisk ?? 'N/A'}</span></td>
+      <td>${a.storyPoints ?? '?'} pt</td>
+      <td>${a.estimatedEffort}</td>
+      <td>
+        <details>
+          <summary>View Fix ▸</summary>
+          <div class="fix-block">
+            
+            <p><strong>Root Cause:</strong> ${a.rootCause}</p>
+            <p><strong>Before:</strong></p>
+            
+            <p><strong>After:</strong></p>
+            
+            <p><strong>Playwright Test:</strong></p>
+            
+          </div>
+        </details>
+      </td>
+    </tr>`
+  ).join('\n');
 
   return `<!DOCTYPE html>
 <html lang="en">
@@ -222,6 +235,11 @@ function generateHTMLReport(
     details summary { cursor: pointer; color: #60a5fa; font-size: 0.8rem; }
     .fix-block { margin-top: 0.5rem; }
     .ai-badge { display: inline-flex; align-items: center; gap: 4px; background: #431407; border: 1px solid #f59e0b; color: #fcd34d; font-size: 0.75rem; padding: 3px 8px; border-radius: 4px; margin-left: 1rem; }
+    .risk { padding: 2px 8px; border-radius: 4px; font-size: 0.7rem; font-weight: 700; }
+    .risk-critical { background: #dc2626; color: white; }
+    .risk-high     { background: #ea580c; color: white; }
+    .risk-medium   { background: #d97706; color: white; }
+    .risk-low      { background: #65a30d; color: white; }
   </style>
 </head>
 <body>
@@ -241,15 +259,17 @@ function generateHTMLReport(
 
   <table>
     <thead>
-      <tr>
-        <th>Impact</th>
-        <th>Rule</th>
-        <th>Summary</th>
-        <th>WCAG</th>
-        <th>Effort</th>
-        <th>Fix</th>
-      </tr>
-    </thead>
+  <tr>
+    <th>Impact</th>
+    <th>Rule</th>
+    <th>Summary</th>
+    <th>WCAG</th>
+    <th>Legal Risk</th>
+    <th>Points</th>
+    <th>Effort</th>
+    <th>Fix</th>
+  </tr>
+</thead>
     <tbody>
       ${rows}
     </tbody>
