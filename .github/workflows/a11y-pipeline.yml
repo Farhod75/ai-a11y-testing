@@ -62,3 +62,8 @@ jobs:
           name: a11y-reports-${{ github.sha }}
           path: reports/
           retention-days: 30
+      - name: Send Slack Notification
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+        run: npx ts-node scripts/slack-notifier.ts
+        if: always()
