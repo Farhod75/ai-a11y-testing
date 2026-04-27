@@ -77,7 +77,8 @@ async function scanPage(
   url: string,
   index: number
 ): Promise<PageScanResult> {
-  const page = await browser.newPage();
+  const context = await browser.newContext();
+  const page = await context.newPage();
   const start = Date.now();
 
   try {
@@ -104,6 +105,7 @@ async function scanPage(
     // axe-core scan
     const axeResults = await new AxeBuilder({ page })
       .withTags(['wcag2a', 'wcag2aa', 'wcag21aa'])
+      .setLegacyMode()
       .analyze();
 
     const duration = Date.now() - start;
@@ -147,6 +149,8 @@ async function scanPage(
     };
   } finally {
     await page.close();
+
+    await context.close();
   }
 }
 
@@ -195,7 +199,7 @@ Provide an executive summary for a QA Manager. Respond with JSON only:
 }`;
 
   const response = await client.messages.create({
-    model: 'claude-sonnet-4-20250514',
+    model: 'claude-sonnet-4-6',
     max_tokens: 1024,
     messages: [{ role: 'user', content: prompt }],
   });
@@ -436,6 +440,7 @@ async function main() {
 
   } finally {
     await browser.close();
+   
   }
 }
 
